@@ -1,0 +1,40 @@
+{
+  "finished": {
+    "derived": "finished",
+    "awaiting": false
+  },
+  "running_tool": {
+    "derived": "running",
+    "awaiting": false
+  },
+  "awaiting_reply": {
+    "derived": "running",
+    "awaiting": true
+  },
+  "prompt_pending": {
+    "derived": "running",
+    "awaiting": true
+  },
+  "interrupted": {
+    "derived": "interrupted",
+    "awaiting": false
+  },
+  "interrupt_then_prompt": {
+    "derived": "running",
+    "awaiting": true
+  },
+  "background": {
+    "derived": "background",
+    "awaiting": false
+  },
+  "old_activity": {
+    "derived": "finished",
+    "awaiting": false,
+    "activity": "2026-09-01T00:00:05.000Z"
+  },
+  "midfile_title": {
+    "derived": "finished",
+    "awaiting": false,
+    "title": "Buried Title"
+  }
+}

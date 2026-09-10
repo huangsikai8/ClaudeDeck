@@ -1,0 +1,5 @@
+{"type": "ai-title", "aiTitle": "T", "sessionId": "fix"}
+{"type": "user", "timestamp": "2026-09-01T10:00:01.000Z", "sessionId": "fix", "message": {"content": [{"type": "text", "text": "do the thing"}]}}
+{"type": "assistant", "timestamp": "2026-09-01T10:00:00.000Z", "sessionId": "fix", "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "toolu_01AAAA", "name": "Bash", "input": {}}]}}
+{"type": "user", "timestamp": "2026-09-01T10:00:01.000Z", "sessionId": "fix", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_01AAAA", "content": "ok"}]}}
+{"type": "assistant", "timestamp": "2026-09-01T10:00:00.000Z", "sessionId": "fix", "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]}}
