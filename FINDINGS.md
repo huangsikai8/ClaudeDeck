@@ -11,7 +11,7 @@ window that owns it. The probe confirmed `ppid === process.pid` from inside
 each window, with no exceptions across 8 windows and 8 chat processes.
 
 This holds even for the case the cwd/title heuristic cannot resolve: two
-windows both named `oaf-hilary-2026` (one under `Projects/`, one under
+windows both named `docs-site` (one under `Projects/`, one under
 `Documents/`) were separated correctly.
 
 Extension-host `cwd` is always `/`, so it identifies nothing on its own — the
@@ -43,16 +43,16 @@ folder, where there is no hash to match on.
 
 Each session file carries repeated `ai-title` records of the form
 
-    {"type":"ai-title","aiTitle":"GitHub update","sessionId":"8246a3f9-…"}
+    {"type":"ai-title","aiTitle":"Tag index backfill","sessionId":"8246a3f9-…"}
 
 whose latest value matches the tab label exactly. Verified against all three
 tabs of one window:
 
 | Tab label (truncated by VS Code) | `aiTitle` | Session |
 |---|---|---|
-| `Claude notify writing qu…` | Claude notify writing quality | `bdaf18eb` |
-| `GitHub update`             | GitHub update                | `8246a3f9` |
-| `VS Code windows and chat…` | VS Code windows and chats GUI with status tracking | `c02d5f51` |
+| `Rewrite the retry helpe…` | Rewrite the retry helper | `bdaf18eb` |
+| `Tag index backfill`             | Tag index backfill                | `8246a3f9` |
+| `Cache the docs build fo…` | Cache the docs build for CI | `c02d5f51` |
 
 Labels are truncated at ~24 characters, so the join is a prefix match. Two
 sessions sharing a 24-character prefix would collide — that is detectable
@@ -71,11 +71,11 @@ Chat *tabs* and chat *processes* are not the same set. Observed counts:
 
 | Window | Chat tabs | Live processes |
 |---|---|---|
-| WindowCycle | 2 | 1 |
-| NAV-Calculation | 2 | 1 |
-| AWS-Glue-Jobs | 2 | 1 |
-| ClaudeNotify | 3 | 2 |
-| ClipBridge | 1 | 1 |
+| media-tagger | 2 | 1 |
+| blog-engine | 2 | 1 |
+| docs-site | 2 | 1 |
+| api-gateway | 3 | 2 |
+| search-index | 1 | 1 |
 
 An open tab with no process is a real, common state — the chat exists in the
 UI but nothing is running. It must be shown as `Idle`, and must never be

@@ -21,6 +21,23 @@ It also posts notifications, in the same shape as
 [Claude Notify](https://github.com/huangsikai8/ClaudeNotify) — same wording,
 same sounds — and badges its Dock icon with how many chats want you.
 
+## What it looks like
+
+<img src="docs/screenshots/deck.png" width="640" alt="The ClaudeDeck window: VS Code windows, their chats, and each chat's status">
+
+Every window, every chat inside it, the status, the evidence for that status,
+and how long ago it happened. The count at the top is how many want you.
+
+A finish you have not seen yet is announced, in Claude Notify's wording:
+
+<img src="docs/screenshots/banner.png" width="480" alt="A ClaudeDeck notification banner">
+
+Each status can be given its own animation, or none:
+
+<img src="docs/screenshots/settings.png" width="640" alt="The appearance panel, listing every status">
+
+Workspace and chat names in these screenshots are placeholders.
+
 ## The rule it is built around
 
 **No false positives, no false negatives.** A status is shown only when it was
@@ -82,7 +99,7 @@ liveness** overrides both.
 ## Install
 
 ```bash
-git clone <this repo> && cd ClaudeDeck
+git clone https://github.com/huangsikai8/ClaudeDeck.git && cd ClaudeDeck
 ./build.sh                                   # builds and installs to /Applications
 ```
 
