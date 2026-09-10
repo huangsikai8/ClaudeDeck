@@ -18,7 +18,7 @@ by the VS Code window that owns it, with a status, the evidence behind it, and
 how long ago it happened. Click a row to jump straight to that chat.
 
 It also posts notifications, in the same shape as
-[Claude Notify](https://github.com/huangsikai8/ClaudeNotify) — same wording,
+[Claude Notify](https://github.com/sethhuang8/ClaudeNotify) — same wording,
 same sounds — and badges its Dock icon with how many chats want you.
 
 ## What it looks like
@@ -99,7 +99,7 @@ liveness** overrides both.
 ## Install
 
 ```bash
-git clone https://github.com/huangsikai8/ClaudeDeck.git && cd ClaudeDeck
+git clone https://github.com/sethhuang8/ClaudeDeck.git && cd ClaudeDeck
 ./build.sh                                   # builds and installs to /Applications
 ```
 
