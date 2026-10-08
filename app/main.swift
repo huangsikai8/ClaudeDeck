@@ -3,6 +3,7 @@ import AppKit
 import UserNotifications
 import ApplicationServices
 import Darwin
+import ServiceManagement
 
 // MARK: - Status
 
@@ -67,10 +68,18 @@ enum Status: String, CaseIterable {
     var bannerLabel: String? {
         switch self {
         case .newResult: return "✅ Finished"
+        case .background: return "⏳ Background"
         case .question: return "❓ Question"
         case .permission: return "❗ Needs Permission"
         default: return nil
         }
+    }
+
+    /// Claude Notify's pending wording. Fixed here rather than taken from the
+    /// hook, because a Background read from the transcript carries whatever
+    /// detail the last hook left — usually "finished".
+    var bannerBody: String? {
+        self == .background ? "Still working — background task running." : nil
     }
 
     /// The system sound Claude Notify plays for this event. It plays them with
@@ -78,7 +87,7 @@ enum Status: String, CaseIterable {
     /// UNNotificationSound would be a different sound at a different moment.
     var bannerSound: String? {
         switch self {
-        case .newResult: return "Hero"
+        case .newResult, .background: return "Hero"
         case .question: return "Funk"
         case .permission: return "Glass"
         default: return nil
@@ -175,6 +184,33 @@ final class Settings: ObservableObject {
         }
         styles = loaded
         playSound = (raw["playSound"] as? Bool) ?? true
+        loginItemSetUp = (raw["loginItemSetUp"] as? Bool) ?? false
+        windowOpen = (raw["windowOpen"] as? Bool) ?? true
+    }
+
+    /// Whether the window was open when the app last ran, so a login brings it
+    /// back only if you left it open.
+    var windowOpen = true {
+        didSet { if windowOpen != oldValue { save() } }
+    }
+
+    /// Launch at login is switched on once, the first time the app runs, and
+    /// left alone after that — turning it off in System Settings must stick.
+    var loginItemSetUp = false {
+        didSet { save() }
+    }
+
+    /// Mirrors macOS's login-item list rather than a stored flag, since System
+    /// Settings can change it behind the app's back.
+    @Published private(set) var launchAtLogin = LoginItem.enabled
+
+    func setLaunchAtLogin(_ on: Bool) {
+        LoginItem.set(on)
+        launchAtLogin = LoginItem.enabled
+    }
+
+    func reloadLaunchAtLogin() {
+        if launchAtLogin != LoginItem.enabled { launchAtLogin = LoginItem.enabled }
     }
 
     func style(for status: Status) -> PillStyle { styles[status] ?? .still }
@@ -192,7 +228,8 @@ final class Settings: ObservableObject {
     private func save() {
         var map: [String: String] = [:]
         for (k, v) in styles { map[k.rawValue] = v.rawValue }
-        Store.write("config.json", ["styles": map, "playSound": playSound])
+        Store.write("config.json", ["styles": map, "playSound": playSound,
+                                    "loginItemSetUp": loginItemSetUp, "windowOpen": windowOpen])
     }
 }
 
@@ -210,6 +247,9 @@ struct Chat: Identifiable {
     let viewColumn: Int?
     let tabIndex: Int?
     let isActiveTab: Bool
+    /// Badges and notifies. Wider than `status.needsAttention`: a Background
+    /// you have not looked at yet wants you too, without being renamed.
+    let needsAttention: Bool
 }
 
 struct WindowRow: Identifiable {
@@ -318,6 +358,10 @@ struct TranscriptInfo {
 }
 
 final class Collector: ObservableObject {
+    /// The one the app runs. Owned by the app rather than the window, because
+    /// the banners it drives are needed most when no window is open.
+    static let shared = Collector()
+
     @Published var windows: [WindowRow] = []
     @Published var lastRefresh = Date()
     @Published var axTrusted = AXIsProcessTrusted()
@@ -378,6 +422,7 @@ final class Collector: ObservableObject {
     /// Open the chat a banner refers to: raise its window, select its tab, and
     /// mark the result seen so the badge and the New pill clear together.
     func openBySession(_ sessionId: String) {
+        Notifier.shared.log("open \(sessionId.prefix(8)) — \(windows.flatMap(\.chats).contains { $0.sessionId == sessionId } ? "listed" : "NOT listed")")
         for w in windows {
             for c in w.chats where c.sessionId == sessionId {
                 markSeen(c)
@@ -388,6 +433,8 @@ final class Collector: ObservableObject {
         // The tab is gone but we still know which window it was.
         if let r = Notifier.shared.route(for: sessionId) { Focus.raise(needle: r.windowName) }
     }
+
+    var attention: Int { windows.flatMap(\.chats).filter(\.needsAttention).count }
 
     func markSeen(_ chat: Chat) {
         guard let sid = chat.sessionId else { return }
@@ -423,8 +470,8 @@ final class Collector: ObservableObject {
 
     func refresh() {
         let states = loadSessionStates()
-        let procs = loadClaudeProcesses()
         let files = loadWindowFiles()
+        let procs = loadClaudeProcesses(parents: Set(files.map(\.extHostPid)))
         bridgeMissing = files.isEmpty
 
         // A live process's session id, when argv did not carry one. Hooks
@@ -545,12 +592,21 @@ final class Collector: ObservableObject {
                 // A finish you have not seen is the thing worth noticing; one
                 // you have already read is just history. Looking at the tab in
                 // the focused window counts as seeing it.
-                if status == .finished, let sid = sid {
+                //
+                // A turn that ended on backgrounded work is announced the same
+                // way, since its reply is there to read — but it stays
+                // Background, because the chat resumes when the work reports back.
+                var unseenBackground = false
+                if status == .finished || status == .background, let sid = sid {
                     if tab.isActive && wf.focused {
                         if (seen[sid] ?? 0) < eventTs { seen[sid] = eventTs; seenChanged = true }
                     } else if (seen[sid] ?? 0) < eventTs {
-                        status = .newResult
-                        basis = "finished since you last looked"
+                        if status == .finished {
+                            status = .newResult
+                            basis = "finished since you last looked"
+                        } else {
+                            unseenBackground = true
+                        }
                     }
                 }
                 // Say *why* it is unidentified. A chat opened seconds ago has no
@@ -573,7 +629,8 @@ final class Collector: ObservableObject {
                                   pid: proc?.pid ?? st?.claudePid,
                                   viewColumn: tab.viewColumn,
                                   tabIndex: tab.index,
-                                  isActiveTab: tab.isActive))
+                                  isActiveTab: tab.isActive,
+                                  needsAttention: status.needsAttention || unseenBackground))
             }
 
             // Only the surplus gets its own row.
@@ -594,7 +651,8 @@ final class Collector: ObservableObject {
                                   eventTs: 0,
                                   detail: nil,
                                   sessionId: sid, pid: p.pid,
-                                  viewColumn: nil, tabIndex: nil, isActiveTab: false))
+                                  viewColumn: nil, tabIndex: nil, isActiveTab: false,
+                                  needsAttention: false))
             }
 
             rows.append(WindowRow(id: extPid, name: wf.name,
@@ -716,32 +774,53 @@ final class Collector: ObservableObject {
         return result
     }
 
-    private func loadClaudeProcesses() -> [ClaudeProc] {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/ps")
-        p.arguments = ["-eo", "pid,ppid,command"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard let out = String(data: data, encoding: .utf8) else { return [] }
-
+    /// The chat processes under each window's extension host.
+    ///
+    /// Asked of the kernel directly, and only for those hosts' children — a
+    /// chat is only ever used as a child of one. This used to run `ps -eo` over
+    /// every process on the machine every refresh, which was nearly half of
+    /// ClaudeDeck's CPU: a fork, and ps reading the argv of ~800 processes.
+    private func loadClaudeProcesses(parents: Set<Int32>) -> [ClaudeProc] {
         var rows: [ClaudeProc] = []
-        for line in out.components(separatedBy: "\n") {
-            guard line.contains("native-binary/claude") else { continue }
-            let t = line.trimmingCharacters(in: .whitespaces)
-            let parts = t.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-            guard parts.count == 3, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else { continue }
-            var sid: String? = nil
-            if let r = parts[2].range(of: "--resume=") {
-                let rest = parts[2][r.upperBound...]
-                sid = String(rest.prefix { !$0.isWhitespace })
+        var buf = [pid_t](repeating: 0, count: 1024)
+        for ppid in parents {
+            let n = proc_listchildpids(ppid, &buf, Int32(buf.count * MemoryLayout<pid_t>.size))
+            guard n > 0 else { continue }
+            for pid in buf.prefix(Int(n)) where pid > 0 {
+                // Same test ps's command column was put to: argv, space-joined.
+                guard let command = commandLine(of: pid),
+                      command.contains("native-binary/claude") else { continue }
+                var sid: String? = nil
+                if let r = command.range(of: "--resume=") {
+                    let rest = command[r.upperBound...]
+                    sid = String(rest.prefix { !$0.isWhitespace })
+                }
+                rows.append(ClaudeProc(pid: pid, ppid: ppid, sessionId: sid))
             }
-            rows.append(ClaudeProc(pid: pid, ppid: ppid, sessionId: sid))
         }
         return rows
+    }
+
+    /// A process's argv joined by spaces — what `ps -o command` prints.
+    private func commandLine(of pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        var raw = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &raw, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+        // Layout: argc, the exec path, NUL padding, then argv[0..argc-1].
+        let argc = raw.withUnsafeBytes { Int($0.load(as: Int32.self)) }
+        var i = MemoryLayout<Int32>.size
+        while i < size && raw[i] != 0 { i += 1 }   // exec path
+        while i < size && raw[i] == 0 { i += 1 }   // padding
+        var args: [String] = []
+        while args.count < argc && i < size {
+            let start = i
+            while i < size && raw[i] != 0 { i += 1 }
+            args.append(String(decoding: raw[start..<i], as: UTF8.self))
+            i += 1
+        }
+        return args.isEmpty ? nil : args.joined(separator: " ")
     }
 
     // MARK: Rate limits
@@ -776,8 +855,7 @@ final class Collector: ObservableObject {
             where win.lastPathComponent.hasPrefix("window") {
                 let exthost = win.appendingPathComponent("exthost/exthost.log").path
                 // The workspace lock line sits near the top of the file.
-                guard headLines(exthost, bytes: 65_536).contains(where: { $0.contains(storageHash) })
-                else { continue }
+                guard exthostHeadMentions(exthost, storageHash) else { continue }
                 let log = win.appendingPathComponent("exthost/Anthropic.claude-code/Claude VSCode.log").path
                 guard let m = (try? FileManager.default.attributesOfItem(atPath: log)[.modificationDate]) as? Date
                 else { continue }
@@ -787,6 +865,40 @@ final class Collector: ObservableObject {
         }
         logPathCache[storageHash] = (now, best?.path)
         return best?.path
+    }
+
+    private static let exthostHeadBytes = 65_536
+    /// Per exthost.log: its size when read, and which storage hashes its head
+    /// did or did not mention. Every past launch's log is rescanned on each
+    /// re-resolve, and they are over a hundred — reading and searching all of
+    /// them each minute, per window, was the other half of ClaudeDeck's CPU.
+    private var exthostHeadCache: [String: (size: UInt64, mentions: [String: Bool])] = [:]
+
+    /// Whether the first 64 KB of an exthost.log contain `hash`. The head can
+    /// only change while the file is still shorter than that, so a result
+    /// stands until the file grows into it — or shrinks, meaning it was replaced.
+    private func exthostHeadMentions(_ path: String, _ hash: String) -> Bool {
+        var sb = stat()
+        guard stat(path, &sb) == 0 else { return false }
+        let size = UInt64(sb.st_size)
+        let limit = UInt64(Collector.exthostHeadBytes)
+        var entry = exthostHeadCache[path] ?? (size: size, mentions: [:])
+        if entry.size != size && !(entry.size >= limit && size > entry.size) {
+            entry = (size: size, mentions: [:])
+        }
+        entry.size = size
+        if let known = entry.mentions[hash] { exthostHeadCache[path] = entry; return known }
+
+        var found = false
+        if let fh = FileHandle(forReadingAtPath: path) {
+            defer { try? fh.close() }
+            if let d = try? fh.read(upToCount: Collector.exthostHeadBytes) {
+                found = d.range(of: Data(hash.utf8)) != nil
+            }
+        }
+        entry.mentions[hash] = found
+        exthostHeadCache[path] = entry
+        return found
     }
 
     /// When the account rate limit was last hit in this window, if ever.
@@ -806,27 +918,37 @@ final class Collector: ObservableObject {
     }
 
     /// "2026-09-09T18:03:00.341Z" as an epoch.
-    private func isoTime(_ s: String) -> Double? {
+    // Built once: a formatter is costly to create, and these ran per line.
+    private static let isoFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f.date(from: s) { return d.timeIntervalSince1970 }
+        return f
+    }()
+    private static let isoWhole: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
-        return f.date(from: s)?.timeIntervalSince1970
+        return f
+    }()
+    private static let localLogTime: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return f
+    }()
+
+    private func isoTime(_ s: String) -> Double? {
+        if let d = Collector.isoFractional.date(from: s) { return d.timeIntervalSince1970 }
+        return Collector.isoWhole.date(from: s)?.timeIntervalSince1970
     }
 
     /// Lines carry either a local "yyyy-MM-dd HH:mm:ss.SSS" prefix or an inline
     /// ISO instant; take whichever is there.
     private func logTimestamp(_ line: String) -> Double? {
-        let local = DateFormatter()
-        local.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         if line.count > 23 {
             let head = String(line.prefix(23))
-            if let d = local.date(from: head) { return d.timeIntervalSince1970 }
+            if let d = Collector.localLogTime.date(from: head) { return d.timeIntervalSince1970 }
         }
         if let r = line.range(of: #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z"#, options: .regularExpression) {
-            let iso = ISO8601DateFormatter()
-            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let d = iso.date(from: String(line[r])) { return d.timeIntervalSince1970 }
+            if let d = Collector.isoFractional.date(from: String(line[r])) { return d.timeIntervalSince1970 }
         }
         return nil
     }
@@ -979,6 +1101,20 @@ final class Collector: ObservableObject {
                 continue
             }
             if sid == nil { sid = j["sessionId"] as? String }
+            // A task that finishes while the turn is still running is absorbed
+            // into it, not delivered as a new message: its completion appears
+            // only as a queued_command attachment — over half of all of them.
+            // Missing it left the launch outstanding, and a finished chat
+            // Background, for good. Not a message, so not activity either.
+            if type == "attachment" {
+                if let a = j["attachment"] as? [String: Any],
+                   (a["type"] as? String) == "queued_command",
+                   (a["commandMode"] as? String) == "task-notification",
+                   let prompt = a["prompt"] as? String, let id = toolUseId(in: prompt) {
+                    pendingLaunches.remove(id)
+                }
+                continue
+            }
             guard type == "assistant" || type == "user" else { continue }
             if let iso = j["timestamp"] as? String, let t = isoTime(iso) {
                 lastMessageTs = max(lastMessageTs ?? 0, t)
@@ -1159,10 +1295,10 @@ final class Collector: ObservableObject {
     /// Ranked: a hook event beats a transcript reading of the same moment,
     /// the transcript beats nothing, and process liveness overrides both — a
     /// session that was running when its process died did not finish.
-    private func resolveStatus(sessionId: String?, state st: SessionState?,
-                               proc: ClaudeProc?, transcripts: [TranscriptInfo],
-                               windowHasUnclaimedProcess: Bool,
-                               rateLimitTs: Double? = nil) -> (Status, String, Double) {
+    func resolveStatus(sessionId: String?, state st: SessionState?,
+                       proc: ClaudeProc?, transcripts: [TranscriptInfo],
+                       windowHasUnclaimedProcess: Bool,
+                       rateLimitTs: Double? = nil) -> (Status, String, Double) {
         guard let sid = sessionId else {
             return (.unknown, "no session could be matched to this tab", 0)
         }
@@ -1177,7 +1313,17 @@ final class Collector: ObservableObject {
 
         // Best-known "last activity" for this chat, reported on every path so
         // a row can always say how old its information is.
-        let evTs = max(max(hookTs, 0), max(tranTs, 0))
+        var evTs = max(max(hookTs, 0), max(tranTs, 0))
+        // One turn end, seen twice: the transcript's end_turn record, then the
+        // Stop hook a fraction of a second later. Dated apart, a refresh that
+        // lands between them announces the finish twice. When both say the
+        // same thing and no message has followed, date it by the transcript,
+        // which saw it first. When they disagree they stay distinct, so the
+        // corrected status is still announced.
+        if let st = st, st.event == "stop", let ti = ti, tranTs > 0, hookTs >= tranTs,
+           Status(rawValue: st.status) == ti.derived {
+            evTs = tranTs
+        }
         var fromTranscript = false
         if let st = st, hookTs >= tranTs {
             status = Status(rawValue: st.status) ?? .unknown
@@ -1304,6 +1450,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     var onOpen: ((String) -> Void)?
 
+    /// When a banner was last clicked. macOS reopens the app on a click too,
+    /// and that reopen is not a request for this app's window.
+    private(set) var lastClick = Date.distantPast
+
     func start() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -1324,18 +1474,19 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         for w in windows {
             for c in w.chats {
                 guard let sid = c.sessionId else { continue }
-                guard c.status.needsAttention, let label = c.status.bannerLabel else { continue }
+                guard c.needsAttention, let label = c.status.bannerLabel else { continue }
                 attention += 1
                 live.insert(sid)
                 routes[sid] = (w.name, w.id, c.viewColumn, c.tabIndex)
 
                 // Post once per distinct event, not once per refresh.
                 if announced[sid] == c.eventTs { continue }
-                announced[sid] = c.eventTs
                 // "Untitled window | ✅ Finished" says nothing. With no project
                 // name, the chat's own title is the useful handle.
-                post(sessionId: sid, project: w.workspaceName ?? c.title,
-                     label: label, chat: c)
+                guard post(sessionId: sid, project: w.workspaceName ?? c.title,
+                           label: label, chat: c) else { continue }
+                announced[sid] = c.eventTs
+                announcedChanged = true
             }
         }
 
@@ -1368,7 +1519,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 .appendingPathComponent(".claude/hooks/claude-notifier-muted").path)
     }
 
-    private func log(_ line: String) {
+    func log(_ line: String) {
         let f = deckDir.appendingPathComponent("notify.log")
         let stamp = ISO8601DateFormatter().string(from: Date())
         guard let d = "\(stamp) \(line)\n".data(using: .utf8) else { return }
@@ -1382,17 +1533,24 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func post(sessionId: String, project: String, label: String, chat: Chat) {
-        guard authorised, !muted else {
-            log("skip \(sessionId.prefix(8)) \(label) authorised=\(authorised) muted=\(muted)")
-            return
+    /// Returns false when nothing was posted, so the event is not recorded as
+    /// announced and can be posted once the way is clear.
+    @discardableResult
+    private func post(sessionId: String, project: String, label: String, chat: Chat) -> Bool {
+        // Not gated on `authorised`: that flag is set by a callback which can
+        // still be outstanding seconds after launch, and a banner dropped for
+        // that reason was dropped for good. An unauthorised post is refused by
+        // the system anyway.
+        guard !muted else {
+            log("skip \(sessionId.prefix(8)) \(label) muted")
+            return false
         }
         log("post \(sessionId.prefix(8)) \(label) eventTs=\(Int(chat.eventTs)) — \(chat.title)")
         let content = UNMutableNotificationContent()
         content.title = "\(project) | \(label)"
         // Claude Notify's wording, supplied by the hook; the chat title is only
         // a fallback for a status the hooks never reported.
-        content.body = chat.detail ?? chat.title
+        content.body = chat.status.bannerBody ?? chat.detail ?? chat.title
         // No UNNotificationSound either way: when this is on, the sound is
         // played exactly as Claude Notify plays it, so the two match rather
         // than chiming differently.
@@ -1411,7 +1569,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         // sessionId as the identifier: re-posting replaces rather than stacks,
         // and withdrawal above can name it.
         let request = UNNotificationRequest(identifier: sessionId, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        UNUserNotificationCenter.current().add(request) { [weak self] err in
+            guard let err = err else { return }
+            DispatchQueue.main.async { self?.log("add failed \(sessionId.prefix(8)): \(err)") }
+        }
+        return true
     }
 
     func route(for sessionId: String) -> (windowName: String, extHostPid: Int32, viewColumn: Int?, tabIndex: Int?)? {
@@ -1430,7 +1592,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler handler: @escaping () -> Void) {
         let sid = response.notification.request.identifier
-        DispatchQueue.main.async { self.onOpen?(sid) }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else {
+            DispatchQueue.main.async { self.log("click \(sid.prefix(8)) ignored — \(response.actionIdentifier)") }
+            handler()
+            return
+        }
+        DispatchQueue.main.async {
+            self.lastClick = Date()
+            self.log("click \(sid.prefix(8))")
+            // Delivering the click activates this app. Claude Notify's process
+            // exits at this point, which is what keeps it from taking the focus
+            // back off VS Code; this one lives on, so it stands down instead.
+            NSApp.hide(nil)
+            self.onOpen?(sid)
+        }
         center.removeDeliveredNotifications(withIdentifiers: [sid])
         announced.removeValue(forKey: sid)
         handler()
@@ -1455,6 +1630,7 @@ enum Focus {
     }
 
     static func go(window: WindowRow, chat: Chat?) {
+        Notifier.shared.log("focus \(window.name) tab=\(chat?.tabIndex.map(String.init) ?? "nil")")
         if let chat = chat, let idx = chat.tabIndex {
             let req: [String: Any] = [
                 "ts": Date().timeIntervalSince1970 * 1000,
@@ -1468,7 +1644,8 @@ enum Focus {
                 try? d.write(to: url)
             }
         }
-        raise(needles: needles(for: window, chat: chat))
+        let ok = raise(needles: needles(for: window, chat: chat))
+        Notifier.shared.log("raise \(ok ? "ok" : "FAILED") — \(needles(for: window, chat: chat))")
     }
 
     /// Reused from Claude Notify: VS Code titles folder windows
@@ -1507,15 +1684,24 @@ enum Focus {
         }
 
         app.activate()
+        var raised = false
         for attempt in 0..<8 {
             guard let w = target() else { Thread.sleep(forTimeInterval: 0.15); continue }
             AXUIElementPerformAction(w, kAXRaiseAction as CFString)
             AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
             AXUIElementSetAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, w)
+            raised = true
             Thread.sleep(forTimeInterval: 0.12)
             if attempt > 1, let m = attr(w, kAXMainAttribute as String) as? Bool, m { break }
         }
-        return true
+        // Said so even when nothing matched, which made every click look like
+        // it had worked.
+        if !raised {
+            let ws = (attr(axApp, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
+            let titles = ws.compactMap { attr($0, kAXTitleAttribute as String) as? String }
+            Notifier.shared.log("raise: no window matching \(needles) among \(titles)")
+        }
+        return raised
     }
 }
 
@@ -1541,16 +1727,45 @@ private func pulse(_ t: Double, _ period: Double) -> Double {
     return tri * tri * (3 - 2 * tri)   // smoothstep
 }
 
-private let tickSchedule = AnimationTimelineSchedule(minimumInterval: 1.0 / 30.0, paused: false)
+/// Whether any ClaudeDeck window can currently be seen.
+///
+/// The animation clock does not stop by itself when the window is hidden,
+/// minimised or covered: it kept laying the window out thirty times a second
+/// with nothing on screen. Pausing loses nothing — every phase is derived from
+/// the clock, so the animation resumes exactly where it would have been.
+final class Visibility: ObservableObject {
+    static let shared = Visibility()
+    @Published private(set) var onScreen = true
+
+    private init() {
+        let nc = NotificationCenter.default
+        for name in [NSWindow.didChangeOcclusionStateNotification,
+                     NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.update() }
+        }
+    }
+
+    private func update() {
+        let now = !NSApp.isHidden && NSApp.windows.contains {
+            $0.canBecomeMain && $0.isVisible && $0.occlusionState.contains(.visible)
+        }
+        if now != onScreen { onScreen = now }
+    }
+}
+
+private func tickSchedule(paused: Bool) -> AnimationTimelineSchedule {
+    AnimationTimelineSchedule(minimumInterval: 1.0 / 30.0, paused: paused)
+}
 
 /// The leading dot. Carries the dot-side treatments; ignores the pill ones.
 struct StatusDot: View {
     let status: Status
     let style: PillStyle
+    @ObservedObject private var visibility = Visibility.shared
 
     var body: some View {
         if style.actsOnDot {
-            TimelineView(tickSchedule) { ctx in
+            TimelineView(tickSchedule(paused: !visibility.onScreen)) { ctx in
                 dot(at: ctx.date.timeIntervalSinceReferenceDate)
             }
         } else {
@@ -1601,10 +1816,11 @@ struct StatusDot: View {
 struct StatusPill: View {
     let status: Status
     var style: PillStyle = .still
+    @ObservedObject private var visibility = Visibility.shared
 
     var body: some View {
         if style.actsOnPill {
-            TimelineView(tickSchedule) { ctx in
+            TimelineView(tickSchedule(paused: !visibility.onScreen)) { ctx in
                 pill(at: ctx.date.timeIntervalSinceReferenceDate)
             }
         } else {
@@ -1684,14 +1900,11 @@ struct ChatRowView: View {
 }
 
 struct ContentView: View {
-    @StateObject private var collector = Collector()
+    @ObservedObject private var collector = Collector.shared
     @ObservedObject private var settings = Settings.shared
-    @State private var timer: Timer?
     @State private var showSettings = false
 
-    private var attention: Int {
-        collector.windows.flatMap(\.chats).filter(\.status.needsAttention).count
-    }
+    private var attention: Int { collector.attention }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1716,15 +1929,9 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 520, minHeight: 380)
-        .onAppear {
-            Notifier.shared.onOpen = { sid in collector.openBySession(sid) }
-            collector.refresh()
-            timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-                guard !collector.isEditing else { return }
-                collector.refresh()
-            }
-        }
-        .onDisappear { timer?.invalidate() }
+        // The refresh runs in the app, not here, so closing the window no
+        // longer stops the banners. Opening it should show now, though.
+        .onAppear { collector.refresh() }
     }
 
     private var header: some View {
@@ -1868,6 +2075,20 @@ struct ContentView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .padding(.horizontal, 14).padding(.bottom, 10)
+
+            Toggle(isOn: Binding(get: { settings.launchAtLogin },
+                                 set: { settings.setLaunchAtLogin($0) })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Launch at login").font(.system(size: 11))
+                    Text("Starts in the menu bar only, with no window or Dock icon, so banners arrive from the moment you log in.")
+                        .font(.system(size: 9)).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .padding(.horizontal, 14).padding(.bottom, 10)
+            .onAppear { settings.reloadLaunchAtLogin() }
 
             Divider()
 
@@ -2015,9 +2236,35 @@ enum Validate {
             }
         }
 
+        // Notification dedup. A finish read from the transcript, then the Stop
+        // hook's record of it 250 ms later, is one event and must carry one
+        // eventTs — a refresh between the two posted it twice. A hook that
+        // disagrees with the transcript must stay distinct, so the corrected
+        // status is still announced.
+        let end = Date().timeIntervalSince1970 - 60
+        func reading(_ derived: Status) -> TranscriptInfo {
+            TranscriptInfo(sessionId: "dedup", aiTitles: [], path: "", mtime: end, activityTs: end,
+                           derived: derived, derivedBasis: "", awaitingAssistant: false)
+        }
+        let stop = SessionState(status: "finished", statusTs: end * 1000 + 250, ts: end * 1000 + 250,
+                                event: "stop", claudePid: nil, transcriptPath: nil, detail: nil)
+        func eventTs(_ st: SessionState?, _ ti: TranscriptInfo) -> Double {
+            collector.resolveStatus(sessionId: "dedup", state: st, proc: nil, transcripts: [ti],
+                                    windowHasUnclaimedProcess: false).2
+        }
+        let dedup: [(String, Bool)] = [
+            ("dedup_same_turn_end", eventTs(nil, reading(.finished)) == eventTs(stop, reading(.finished))),
+            ("dedup_hook_disagrees", eventTs(nil, reading(.background)) != eventTs(stop, reading(.background))),
+        ]
+        for (name, ok) in dedup {
+            print(ok ? "PASS \(name)" : "FAIL \(name): one turn end dated as two events, or two as one")
+            if !ok { failures += 1 }
+        }
+
         if surveyAll { survey(collector) }
 
-        print("\n\(names.count - failures)/\(names.count) passed")
+        let total = names.count + dedup.count
+        print("\n\(total - failures)/\(total) passed")
         return failures == 0 ? 0 : 1
     }
 
@@ -2048,7 +2295,47 @@ enum Validate {
 
 // MARK: - App
 
+/// Launch at login, through macOS's own login-item list, so it shows — and can
+/// be switched off — in System Settings as well as here.
+enum LoginItem {
+    static var enabled: Bool { SMAppService.mainApp.status == .enabled }
+
+    static func set(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            NSLog("ClaudeDeck: login item \(on ? "register" : "unregister") failed: \(error)")
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var timer: Timer?
+
+    /// Opens the window, making a new one if it was closed. Set by the menu bar
+    /// item, which is the one view that always exists to hold `openWindow`.
+    static var openMain: (() -> Void)? {
+        didSet { if wantsWindow, let open = openMain { wantsWindow = false; open() } }
+    }
+    /// Asked for before the menu bar item existed to open it.
+    private static var wantsWindow = false
+
+    /// The ClaudeDeck window, as opposed to the menu bar item's own windows.
+    static var mainWindows: [NSWindow] { NSApp.windows.filter(\.canBecomeMain) }
+
+    /// Opened by you: in the Dock and in front.
+    static func showWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        if let w = mainWindows.first(where: { $0.isVisible || $0.isMiniaturized }) {
+            w.makeKeyAndOrderFront(nil)
+        } else if let open = openMain {
+            open()
+        } else {
+            wantsWindow = true
+        }
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
         if CommandLine.arguments.contains("--validate") {
             exit(Validate.run(surveyAll: CommandLine.arguments.contains("--survey")))
@@ -2061,9 +2348,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runBannerTest()
             return
         }
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+
+        // At login, come back the way you left it: a window that was open is
+        // restored, and with it the Dock icon; one you had closed stays closed,
+        // leaving only the menu bar item. Opened by you, it always shows.
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let atLogin = CommandLine.arguments.contains("--background")
+            || (event?.eventID == AEEventID(kAEOpenApplication)
+                && event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue
+                    == OSType(keyAELaunchedAsLogInItem))
+        //
+        // SwiftUI's own restoration is off (see the scene): it was unreliable,
+        // and could put the window up after this had decided there was none.
+        if atLogin && !Settings.shared.windowOpen {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            DispatchQueue.main.async { Self.showWindow() }
+        }
+        observeWindows()
+
+        Notifier.shared.onOpen = { sid in Collector.shared.openBySession(sid) }
         Notifier.shared.start()
+        startRefreshing()
+
+        if !Settings.shared.loginItemSetUp {
+            LoginItem.set(true)
+            Settings.shared.loginItemSetUp = true
+        }
+    }
+
+    /// Every banner and sound comes out of this refresh, so it belongs to the
+    /// app, not to the window — closing the window used to stop it.
+    private func startRefreshing() {
+        Collector.shared.refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            guard !Collector.shared.isEditing else { return }
+            Collector.shared.refresh()
+        }
+        // Lets the system coalesce this wakeup with others rather than
+        // waking the CPU on its own every two seconds.
+        timer?.tolerance = 0.3
+    }
+
+    /// In the Dock while the window is open, menu bar only once it is closed.
+    private var terminating = false
+    func applicationWillTerminate(_ n: Notification) { terminating = true }
+    func applicationShouldTerminate(_ s: NSApplication) -> NSApplication.TerminateReply {
+        terminating = true
+        return .terminateNow
+    }
+
+    private func observeWindows() {
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { n in
+            guard let w = n.object as? NSWindow, w.canBecomeMain else { return }
+            Settings.shared.windowOpen = true
+            if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        }
+        nc.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [unowned self] n in
+            guard let closing = n.object as? NSWindow, closing.canBecomeMain else { return }
+            let others = Self.mainWindows.filter { $0 !== closing && ($0.isVisible || $0.isMiniaturized) }
+            // Quitting closes the window too; that is not you closing it.
+            if others.isEmpty && !self.terminating {
+                Settings.shared.windowOpen = false
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 
     // Closing the window must not quit: the badge and the banners are the
@@ -2121,9 +2471,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Opening the app again — Finder, Spotlight, the Dock — while it sits in
+    /// the menu bar is you asking for it.
+    ///
+    /// Clicking a banner reopens the app as well, and that one is a request for
+    /// the chat in VS Code, not for this window — so wait long enough to tell
+    /// the two apart.
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { s.windows.first?.makeKeyAndOrderFront(nil) }
-        return true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            let since = Date().timeIntervalSince(Notifier.shared.lastClick)
+            Notifier.shared.log(String(format: "reopen visible=%@ sinceClick=%.1fs", "\(flag)", since))
+            guard since > 5 else { return }
+            Self.showWindow()
+        }
+        return false
+    }
+}
+
+/// The menu bar item: how many chats want you, since in the background there is
+/// no Dock icon to badge.
+struct MenuBarLabel: View {
+    @ObservedObject private var collector = Collector.shared
+    @Environment(\.openWindow) private var openWindow
+
+    /// The app icon's twelve-point star, as a template so it takes the menu
+    /// bar's colour. A stock symbol would look like any other app's item.
+    static let starburst: NSImage = {
+        let size: CGFloat = 16, points = 12
+        let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { r in
+            let c = NSPoint(x: r.midX, y: r.midY)
+            let outer = size / 2, inner = size * 0.13
+            let path = NSBezierPath()
+            for i in 0..<(points * 2) {
+                let radius = i.isMultiple(of: 2) ? outer : inner
+                let a = CGFloat(i) * .pi / CGFloat(points) + .pi / 2
+                let p = NSPoint(x: c.x + radius * cos(a), y: c.y + radius * sin(a))
+                if i == 0 { path.move(to: p) } else { path.line(to: p) }
+            }
+            path.close()
+            NSColor.black.setFill()
+            path.fill()
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }()
+
+    var body: some View {
+        let n = collector.attention
+        // An SF Symbol interpolated into Text draws nothing in the menu bar.
+        HStack(spacing: 3) {
+            Image(nsImage: Self.starburst)
+            if n > 0 { Text("\(n)") }
+        }
+            .onAppear { AppDelegate.openMain = { openWindow(id: "main") } }
+    }
+}
+
+struct MenuBarMenu: View {
+    @ObservedObject private var collector = Collector.shared
+
+    var body: some View {
+        let n = collector.attention
+        Text(n == 0 ? "Nothing waiting on you" : "\(n) waiting on you")
+        Divider()
+        Button("Open ClaudeDeck") { AppDelegate.showWindow() }
+        Toggle("Launch at Login", isOn: Binding(get: { LoginItem.enabled },
+                                                set: { Settings.shared.setLaunchAtLogin($0) }))
+        Divider()
+        Button("Quit ClaudeDeck") { NSApp.terminate(nil) }
+            .keyboardShortcut("q")
     }
 }
 
@@ -2131,9 +2548,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct ClaudeDeckApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
-        WindowGroup("ClaudeDeck") {
+        Window("ClaudeDeck", id: "main") {
             ContentView()
         }
         .defaultSize(width: 620, height: 520)
+        // The app decides when the window shows (AppDelegate), not SwiftUI.
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
+        MenuBarExtra {
+            MenuBarMenu()
+        } label: {
+            MenuBarLabel()
+        }
     }
 }

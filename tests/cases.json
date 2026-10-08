@@ -27,6 +27,10 @@
     "derived": "background",
     "awaiting": false
   },
+  "absorbed_completion": {
+    "derived": "finished",
+    "awaiting": false
+  },
   "old_activity": {
     "derived": "finished",
     "awaiting": false,

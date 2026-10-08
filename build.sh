@@ -16,7 +16,7 @@ fi
 
 echo "==> compiling"
 mkdir -p "$SRC_DIR/build"
-swiftc -O -parse-as-library -o "$SRC_DIR/build/ClaudeDeck" "$SRC_DIR/app/main.swift" \
+swiftc -O -parse-as-library -target arm64-apple-macos15 -o "$SRC_DIR/build/ClaudeDeck" "$SRC_DIR/app/main.swift" \
 	-framework AppKit -framework SwiftUI
 
 echo "==> assembling bundle"

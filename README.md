@@ -19,7 +19,13 @@ how long ago it happened. Click a row to jump straight to that chat.
 
 It also posts notifications, in the same shape as
 [Claude Notify](https://github.com/sethhuang8/ClaudeNotify) — same wording,
-same sounds — and badges its Dock icon with how many chats want you.
+same sounds — and shows how many chats want you, in the menu bar and on its
+Dock icon.
+
+It launches at login and comes back the way you left it: with its window if the
+window was open, otherwise in the menu bar only, with no Dock icon. Closing the
+window puts it back in the menu bar; the banners carry on either way. Launch at login can be switched off from the menu bar item or in System
+Settings → General → Login Items.
 
 ## What it looks like
 
@@ -69,7 +75,9 @@ before ClaudeDeck ever saw it is history, not news.
 | **Idle** | Tab open, nothing running behind it |
 | **Unknown** | No status could be established |
 
-New, Question and Permission are the three that badge the Dock and notify.
+New, Question and Permission are counted in the menu bar and Dock, and notify. So does a Background
+you have not looked at yet: the turn ended and its reply is there to read,
+though the chat resumes when the work reports back.
 
 ## How it fits together
 
@@ -140,7 +148,7 @@ ClaudeDeck honours the same mute flag Claude Notify does
 ## Checks
 
 ```bash
-./check.sh              # 9 derivation fixtures + 8 hook rules
+./check.sh              # 10 derivation fixtures + 2 dedup cases + 10 hook rules
 ./check.sh --survey     # also replays every transcript on this machine
 ```
 
@@ -149,8 +157,9 @@ Every fixture is a bug that shipped. The derivation cases call the same
 the same reason Claude Notify's `validate.js` replays through its shipped
 scanner. **Add a fixture for every bug found from here on.**
 
-Not covered yet: notification dedup, the memento lookup, the cwd fallback, and
-rate-limit detection — all places bugs have already appeared.
+Not covered yet: notification dedup beyond the same-turn case, the memento
+lookup, the cwd fallback, and rate-limit detection — all places bugs have
+already appeared.
 
 ## What was measured, not assumed
 

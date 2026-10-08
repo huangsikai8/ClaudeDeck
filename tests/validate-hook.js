@@ -32,7 +32,9 @@ function reset(seed) {
 }
 
 let failures = 0;
+let total = 0;
 function check(name, fn) {
+  total += 1;
   try {
     fn();
     console.log(`PASS ${name}`);
@@ -101,6 +103,22 @@ check("permission records the tool and command", () => {
   if (!d.detail.startsWith("Bash: ")) throw new Error(`detail: ${d.detail}`);
 });
 
+// A task that finishes while the turn is still running is recorded only as a
+// queued_command attachment. Missing it kept a finished chat Background.
+check("stop counts a completion absorbed mid-turn", () => {
+  reset(null);
+  run("stop", { transcript_path: path.join(__dirname, "fixtures", "absorbed_completion.jsonl") });
+  eq(state().status, "finished", "status");
+});
+
+check("stop on outstanding work says so, not finished", () => {
+  reset(null);
+  run("stop", { transcript_path: path.join(__dirname, "fixtures", "background.jsonl") });
+  const d = state();
+  eq(d.status, "background", "status");
+  eq(d.detail, "Still working — background task running.", "detail");
+});
+
 try { fs.unlinkSync(FILE); } catch {}
-console.log(`\n${8 - failures}/8 passed`);
+console.log(`\n${total - failures}/${total} passed`);
 process.exit(failures ? 1 : 0);

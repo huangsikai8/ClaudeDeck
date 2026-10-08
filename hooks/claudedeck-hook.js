@@ -71,9 +71,13 @@ function truncate(text, max) {
 
 /** The banner body, worded exactly as Claude Notify's hooks word it, so the
  *  two apps' notifications read identically when both are running. */
-function detailFor(event, input) {
+function detailFor(event, input, status) {
   if (event === "question") return "Claude is asking you a question.";
-  if (event === "stop") return "Claude has finished the task.";
+  if (event === "stop") {
+    return status === "background"
+      ? "Still working — background task running."
+      : "Claude has finished the task.";
+  }
   if (event !== "permission") return null;
   const tool = input.tool_name || "a tool";
   const suggested =
@@ -177,7 +181,7 @@ function main(raw) {
     // needs rediscovering when we have none or the old one has gone.
     claudePid: (prev.claudePid && isAlive(prev.claudePid) ? prev.claudePid : ownerClaudePid()) || null,
     cwd: input.cwd || prev.cwd || null,
-    detail: detailFor(event, input) || prev.detail || null,
+    detail: detailFor(event, input, status) || prev.detail || null,
     transcriptPath: input.transcript_path || prev.transcriptPath || null,
   };
   try {

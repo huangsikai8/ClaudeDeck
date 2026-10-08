@@ -8,7 +8,9 @@
 //
 // The transcript records both halves of that:
 //   launch     — a tool_result announcing the task was backgrounded
-//   completion — a <task-notification> carrying the launching tool-use-id
+//   completion — a <task-notification> carrying the launching tool-use-id,
+//                either as a user message or, when the task finished while
+//                the turn was still running, as a queued_command attachment
 //
 // Anything launched and not yet notified is outstanding. The ledger is scoped
 // to the current stage (cleared at each real user prompt), because a task
@@ -55,6 +57,24 @@ function asText(value) {
 /** Content blocks as a searchable string, whatever shape the record uses. */
 function contentText(rec) {
   return asText(rec && rec.message && rec.message.content);
+}
+
+/**
+ * Where a completion's <task-notification> is recorded.
+ *
+ * A task that finishes after the turn ended re-invokes the session with a new
+ * user message. One that finishes while the turn is still running is absorbed
+ * into it instead, and appears only as a queued_command attachment — over half
+ * of all completions. Reading message content alone left those outstanding for
+ * good, so a finished chat stayed silent, reported as waiting on work that had
+ * long since exited.
+ */
+function completionText(rec) {
+  const a = rec && rec.type === "attachment" && rec.attachment;
+  if (a && a.type === "queued_command" && a.commandMode === "task-notification") {
+    return asText(a.prompt);
+  }
+  return contentText(rec);
 }
 
 /**
@@ -133,7 +153,7 @@ function createScanner() {
         }
       }
 
-      const text = contentText(rec);
+      const text = completionText(rec);
       if (text.includes(TASK_NOTIFICATION)) {
         const m = TOOL_USE_ID.exec(text);
         if (m) pending.delete(m[1]);

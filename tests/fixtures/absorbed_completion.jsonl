@@ -1,0 +1,10 @@
+{"type": "ai-title", "aiTitle": "T", "sessionId": "fix"}
+{"type": "user", "timestamp": "2026-09-01T10:00:01.000Z", "sessionId": "fix", "message": {"content": [{"type": "text", "text": "do the thing"}]}}
+{"type": "assistant", "timestamp": "2026-09-01T10:00:02.000Z", "sessionId": "fix", "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "toolu_01AAAA", "name": "Bash", "input": {"run_in_background": true}}]}}
+{"type": "user", "timestamp": "2026-09-01T10:00:03.000Z", "sessionId": "fix", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_01AAAA", "content": "Command running in background with ID: bg_1. Output is being written to: /tmp/bg_1.output"}]}}
+{"type": "assistant", "timestamp": "2026-09-01T10:00:04.000Z", "sessionId": "fix", "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "toolu_01BBBB", "name": "Bash", "input": {}}]}}
+{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-09-01T10:00:05.000Z", "sessionId": "fix", "content": "<task-notification>\n<task-id>bg_1</task-id>\n<tool-use-id>toolu_01AAAA</tool-use-id>\n<status>completed</status>\n</task-notification>"}
+{"type": "user", "timestamp": "2026-09-01T10:00:06.000Z", "sessionId": "fix", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_01BBBB", "content": "done"}]}}
+{"type": "attachment", "timestamp": "2026-09-01T10:00:05.000Z", "sessionId": "fix", "attachment": {"type": "queued_command", "prompt": "<task-notification>\n<task-id>bg_1</task-id>\n<tool-use-id>toolu_01AAAA</tool-use-id>\n<status>completed</status>\n</task-notification>", "commandMode": "task-notification"}}
+{"type": "queue-operation", "operation": "remove", "timestamp": "2026-09-01T10:00:06.000Z", "sessionId": "fix", "content": "<task-notification>\n<task-id>bg_1</task-id>\n<tool-use-id>toolu_01AAAA</tool-use-id>\n<status>completed</status>\n</task-notification>", "reason": "absorbed_mid_turn"}
+{"type": "assistant", "timestamp": "2026-09-01T10:00:07.000Z", "sessionId": "fix", "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]}}

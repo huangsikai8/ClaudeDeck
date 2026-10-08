@@ -24,13 +24,6 @@ looked plausible at the time:
   30 minutes, which also silently suppressed the stall guard
 - `PermissionRequest` also fires for `AskUserQuestion`, so a question was
   reported as **Needs Permission**
-- a backgrounded task that finished while the turn was still running kept the
-  chat **Background** for good, and silent: its completion is absorbed into the
-  turn and recorded only as a `queued_command` attachment, never as a
-  `<task-notification>` message — over half of all completions
-- one finish announced twice: the transcript's `end_turn` and the Stop hook's
-  record land ~250 ms apart, were dated separately, and a refresh between them
-  looked like a second event
 
 ## Before and after any change
 
@@ -38,7 +31,7 @@ looked plausible at the time:
 ./check.sh
 ```
 
-22 checks: 10 derivation fixtures, 2 notification-dedup cases, 10 hook rules. The derivation cases call the
+17 checks: 9 derivation fixtures, 8 hook rules. The derivation cases call the
 same `parseTranscript` the app uses, so a rule cannot pass there and fail in the
 app.
 
@@ -46,11 +39,10 @@ app.
 exists because fixes here were verified once by hand and then silently broken by
 later changes. `tests/fixtures/*.jsonl` plus a line in `tests/cases.json`.
 
-Not covered yet, and where bugs have already appeared: notification dedup
-beyond the same-turn case, the memento lookup, the cwd fallback, rate-limit
-detection, and the whole GUI.
+Not covered yet, and where bugs have already appeared: notification dedup, the
+memento lookup, the cwd fallback, rate-limit detection, and the whole GUI.
 
-## Follow Claude Notify
+## Follow Codex Notify
 
 `~/Projects/ClaudeNotify` is the sibling project and the reference for anything
 notification-shaped — wording, sounds, and especially the guards that decide
